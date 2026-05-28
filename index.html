@@ -558,7 +558,7 @@
         <label>Valor (R$)</label>
         <input type="number" id="inputValue" placeholder="0,00" step="0.01" min="0">
       </div>
-      <button class="btn btn-primary" onclick="addEntry()">
+      <button class="btn btn-primary" onclick="window._addEntry()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;margin-top:-2px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Adicionar
       </button>
     </div>
@@ -595,25 +595,16 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+
 <!-- Firebase SDK -->
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
-  import {
-    getFirestore,
-    collection,
-    addDoc,
-    deleteDoc,
-    doc,
-    onSnapshot,
-    query,
-    orderBy,
-    serverTimestamp
-  } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, push, remove, onValue } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
-  // ---- Firebase Config ----
   const firebaseConfig = {
     apiKey: "AIzaSyDz4sZI2U94dA9amLBWFNfvXzr-POxbuYA",
     authDomain: "adenilton-pagamento.firebaseapp.com",
+    databaseURL: "https://adenilton-pagamento-default-rtdb.firebaseio.com",
     projectId: "adenilton-pagamento",
     storageBucket: "adenilton-pagamento.firebasestorage.app",
     messagingSenderId: "420746893077",
@@ -621,8 +612,8 @@
   };
 
   const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-  const entriesCol = collection(db, "pagamentos");
+  const db = getDatabase(app);
+  const entriesRef = ref(db, 'folha_pago_entries');
 
   // ---- Helpers ----
   function today() {
@@ -656,16 +647,23 @@
     const list = document.getElementById('entriesList');
     const count = document.getElementById('entryCount');
 
+    // Sort by date desc
     const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date));
+
     count.textContent = `${sorted.length} entrada${sorted.length !== 1 ? 's' : ''}`;
 
     let blocked = 0, free = 0;
+
     sorted.forEach(e => {
       const payDate = addDays(e.date, 4);
       const diff = daysDiff(payDate, todayStr);
       if (diff <= 0) free += e.value;
       else blocked += e.value;
     });
+
+    // Update total card
+    const totalEl = document.getElementById('sumTotal');
+    if (totalEl) totalEl.textContent = formatCurrency(blocked + free);
 
     document.getElementById('sumBlocked').textContent = formatCurrency(blocked);
     document.getElementById('sumFree').textContent = formatCurrency(free);
@@ -684,6 +682,7 @@
 
       let statusClass = isFree ? 'status-free' : (isOverdue ? 'status-overdue' : 'status-blocked');
       let valueClass = isFree ? 'value-free' : 'value-blocked';
+
       let badge, payLabel;
 
       if (isFree) {
@@ -701,13 +700,13 @@
       }
 
       return `
-        <div class="entry ${statusClass}" data-id="${entry.id}">
+        <div class="entry ${statusClass}" data-id="${entry.firebaseKey}">
           <span class="entry-date">${formatDate(entry.date)}</span>
           <span class="entry-value ${valueClass}">${formatCurrency(entry.value)}</span>
           ${payLabel}
           ${badge}
           <div class="actions">
-            <button class="btn btn-sm btn-danger" onclick="window.deleteEntry('${entry.id}')" title="Remover">
+            <button class="btn btn-sm btn-danger" onclick="window._deleteEntry('${entry.firebaseKey}')" title="Remover">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
@@ -716,38 +715,42 @@
     }).join('');
   }
 
-  // ---- Add Entry ----
-  async function addEntry() {
+  // ---- Real-time listener ----
+  onValue(entriesRef, (snapshot) => {
+    const data = snapshot.val();
+    const entries = [];
+    if (data) {
+      Object.keys(data).forEach(key => {
+        entries.push({ ...data[key], firebaseKey: key });
+      });
+    }
+    render(entries);
+  });
+
+  // ---- Add ----
+  window._addEntry = function() {
     const valueEl = document.getElementById('inputValue');
     const value = parseFloat(valueEl.value);
+
     if (!value || value <= 0) { showToast('Informe um valor válido.', 'warning'); return; }
 
     const date = today();
-    try {
-      await addDoc(entriesCol, {
-        date,
-        value,
-        createdAt: serverTimestamp()
-      });
-      valueEl.value = '';
-      const payDate = addDays(date, 4);
-      showToast(`Entrada adicionada! Libera em ${formatDate(payDate)}.`, 'success');
-    } catch (err) {
-      console.error(err);
-      showToast('Erro ao salvar no Firebase.', 'warning');
-    }
-  }
+    push(entriesRef, { date, value })
+      .then(() => {
+        valueEl.value = '';
+        const payDate = addDays(date, 4);
+        showToast(`Entrada adicionada! Libera em ${formatDate(payDate)}.`, 'success');
+      })
+      .catch(() => showToast('Erro ao salvar. Verifique a conexão.', 'warning'));
+  };
 
-  // ---- Delete Entry ----
-  async function deleteEntry(id) {
-    try {
-      await deleteDoc(doc(db, "pagamentos", id));
-      showToast('Entrada removida.', 'warning');
-    } catch (err) {
-      console.error(err);
-      showToast('Erro ao remover do Firebase.', 'warning');
-    }
-  }
+  // ---- Delete ----
+  window._deleteEntry = function(firebaseKey) {
+    const itemRef = ref(db, `folha_pago_entries/${firebaseKey}`);
+    remove(itemRef)
+      .then(() => showToast('Entrada removida.', 'warning'))
+      .catch(() => showToast('Erro ao remover.', 'warning'));
+  };
 
   // ---- Toast ----
   function showToast(msg, type = 'success') {
@@ -760,31 +763,17 @@
     setTimeout(() => { t.className = 'toast'; }, 3000);
   }
 
-  // ---- Real-time listener (onSnapshot) ----
-  const q = query(entriesCol, orderBy("createdAt", "desc"));
-  onSnapshot(q, (snapshot) => {
-    const entries = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    render(entries);
-  }, (err) => {
-    console.error("Firebase listener error:", err);
-    showToast('Erro ao conectar com o banco de dados.', 'warning');
-  });
-
   // ---- Init ----
   document.getElementById('todayDate').textContent = formatDate(today());
 
-  // Auto-refresh data display a cada minuto (caso mude o dia)
+  // Auto-refresh date display a cada minuto
   setInterval(() => {
     document.getElementById('todayDate').textContent = formatDate(today());
   }, 60000);
 
-  // Expose functions to global scope (needed for inline onclick)
-  window.addEntry = addEntry;
-  window.deleteEntry = deleteEntry;
-
   // Enter para adicionar
   document.getElementById('inputValue').addEventListener('keydown', e => {
-    if (e.key === 'Enter') addEntry();
+    if (e.key === 'Enter') window._addEntry();
   });
 </script>
 </body>
